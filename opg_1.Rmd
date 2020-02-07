@@ -1,0 +1,39 @@
+---
+title: "tid_1_opgaver"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+
+```{r}
+w <- ts(rnorm(100))
+
+xt <- filter(w, c(0, -0.9), method = "recursive")
+
+vt <- filter(xt, c(1,1,1,1)/4, sides = 1)
+
+plot(xt)
+lines(vt, col = "red", lty = 2)
+
+xt <- ts(cos(2*pi*(1:100)/4))
+vt <- filter(xt, c(1,1,1,1)/4, sides = 1)
+plot(xt)
+lines(vt, col = "red", lty = 2)
+
+xt <- ts(cos(2*pi*(1:100)/4) + rnorm(100))
+vt <- filter(xt, c(1,1,1,1)/4, sides = 1)
+plot(xt)
+lines(vt, col = "red", lty = 2)
+
+
+w <- ts(rnorm(100))
+
+xt <- ts(filter(w, c(1,2,1)))
+
+acf(na.omit(xt))
+
+```
+
