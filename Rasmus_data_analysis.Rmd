@@ -10,13 +10,15 @@ library(vars)
 library(tidyverse)
 library(readxl)
 library(urca)
+library(lubridate)
+library(openair)
 
 ```
 
 
 ```{r}
 
-data("Canada")
+# data("Canada")
 
 Elspot_priser_2019 <- read_excel("C:/Users/rasmu/Dropbox/P-Sex/Data/Elspot-priser/Elspot-priser_2019.xlsx")
 
@@ -25,11 +27,9 @@ EL_forbrug_2019 <- read_excel("C:/Users/rasmu/Dropbox/P-Sex/Data/Elspot-priser/E
 EL_pris <- Elspot_priser_2019 %>% select(c(...1,DK1))
 EL_forbrug <- EL_forbrug_2019
 
-data <- bind_cols(EL_pris, EL_forbrug)
+data_forbrug_pris <- inner_join(EL_pris, EL_forbrug,by = "...1") %>% `colnames<-`(c("date", "Price", "Consumption"))
 
-data <- inner_join(EL_pris, EL_forbrug,by = "...1") %>% `colnames<-`(c("date", "Price", "Consumption"))
-
-d_ts <- as.ts(data[,-1])
+d_ts <- as.ts(data_forbrug_pris[,-1])
 
 
 summary(d_ts)
@@ -74,14 +74,81 @@ co2_fuld <- read_excel("C:/Users/rasmu/Dropbox/P-Sex/Data/CO2/co2emis-dee2c24515
 co2 <- co2_fuld[,-c(1,3)]
 
 out <- co2[(order(as.Date(co2$`43781.847222222219`))),]
+out <- out %>% `colnames<-`(c("date", "udledning"))
+out$date <- as_datetime(out$date)
+
+data <- out %>% filter(!duplicated(date))
+
 
 ts_co2 <- as.ts(out[,-1])
 
 plot(ts_co2)
+
+data <- out %>% mutate(date = as_date(date)) %>% group_by(date) %>% summarize(mean_udledning = mean(udledning))
+
+summary(data)
+
+ts_udledning <- as.ts(data[,-1])
+
+plot(ts_udledning)
+
+plot(data, type = "l")
+
+data_2019_co2 <- selectByDate(mydata = data,start = "1/1/2019",end = "31/12/2019", day = 1:31)
+
+
+
+
 ```
 
 
 
+```{r}
+
+data_forbrug_pris$date <- as.Date(data_forbrug_pris$date)
+view(data_forbrug_pris)
+view(data_2019_co2)
+class(data_forbrug_pris$date)
+class(data_2019_co2$date)
+
+data_total <- inner_join(data_forbrug_pris,data_2019_co2,"date")
+ts_data <- as.ts(data_total[,-1])
+
+summary(ts_data)
+
+plot(ts_data, nc = 2, xlab = "")
+
+adf1 <- summary(ur.df(ts_data[, "Price"], type = "trend", lags = 2))
+adf1
+
+
+adf2 <- summary(ur.df(diff(ts_data[, "Price"]), type = "drift", lags = 1))
+adf2
+
+
+VAR_result <- VARselect(ts_data, lag.max = 10, type = "both")
+VAR_result$selection
+
+p1ct <- VAR(ts_data, p = 1)
+p1ct
+
+summary(p1ct, equation = "Price")
+summary(p1ct, equation = "Consumption")
+summary(p1ct, equation = "mean_udledning")
+
+plot(p1ct, names = "Price")
+plot(p1ct, names = "Consumption")
+plot(p1ct, names = "mean_udledning")
+
+
+ser11 <- serial.test(p1ct, lags.pt = 16, type = "PT.asymptotic")
+ser11
+
+norm1 <- normality.test(p1ct)
+norm1$jb.mul
+
+
+```
 
 
 
