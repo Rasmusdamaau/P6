@@ -68,12 +68,14 @@ norm1$jb.mul
 
 ```{r}
 
-co2_fuld <- read_excel("C:/Users/rasmu/Dropbox/P-Sex/Data/CO2/co2emis-dee2c245157047d6a4743124d7660ae6.xlsx")
+# co2_fuld <- read_excel("C:/Users/rasmu/Dropbox/P-Sex/Data/CO2/co2emis-dee2c245157047d6a4743124d7660ae6.xlsx")
+
+co2_fuld <- read_excel("C:/Users/rasmu/Dropbox/P-Sex/Data/CO2/co2-2019.xlsx")
 
 
 co2 <- co2_fuld[,-c(1,3)]
 
-out <- co2[(order(as.Date(co2$`43781.847222222219`))),]
+out <- co2[(order(as.Date(co2$Minutes5DK))),]
 out <- out %>% `colnames<-`(c("date", "udledning"))
 out$date <- as_datetime(out$date)
 
@@ -95,7 +97,7 @@ plot(ts_udledning)
 plot(data, type = "l")
 
 data_2019_co2 <- selectByDate(mydata = data,start = "1/1/2019",end = "31/12/2019", day = 1:31)
-
+data_2019_co2 <- data
 
 
 
@@ -130,6 +132,7 @@ VAR_result <- VARselect(ts_data, lag.max = 10, type = "both")
 VAR_result$selection
 
 p1ct <- VAR(ts_data, p = 1)
+roots(p1ct)
 p1ct
 
 summary(p1ct, equation = "Price")
@@ -147,6 +150,23 @@ ser11
 norm1 <- normality.test(p1ct)
 norm1$jb.mul
 
+grangertest(x = ts_data[,1], y = ts_data[,2])
+grangertest(ts_data[,1], ts_data[,3])
+grangertest(ts_data[,2], ts_data[,3])
+grangertest(ts_data[,3], ts_data[,2], order = 6)
+grangertest(ts_data[,3], ts_data[,1])
+
+
+granger <- function(data) {
+  for (i in 1:ncol(data)) {
+    for (j in 1:ncol(data)) {
+      if (!(i==j)) {
+        print(grangertest(data[,i], data[,j]))
+      }
+    }
+  }
+}
+granger(ts_data)
 
 ```
 
