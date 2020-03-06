@@ -1,0 +1,24 @@
+---
+title: "Rasmus_data_analysis"
+output: pdf_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+
+library(vars)
+```
+
+
+```{r}
+
+Elspot_priser_2013_2017 <- read_excel("C:/Users/rasmu/Dropbox/P-Sex/Data/Elspot-priser/Elspot-priser_2013-2017.xlsx")
+
+EL_forbrug_2019 <- read_excel("C:/Users/rasmu/Dropbox/P-Sex/Data/Elspot-priser/EL_forbrug_2019.xlsx")
+
+
+
+
+
+```
+
