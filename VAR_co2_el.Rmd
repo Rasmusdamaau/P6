@@ -1,0 +1,101 @@
+---
+title: "VAR_co2_el"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+
+library(vars)
+library(tidyverse)
+library(readxl)
+library(urca)
+library(lubridate)
+library(openair)
+library(tseries)
+library(forecast)
+```
+
+
+# Data from Nordpool
+
+```{r}
+
+# El-forbrug 2017-2019
+consumption_dk_areas_2017_daily <- read_excel("C:/Users/rasmu/Dropbox/P-Sex/Data/comsumption/consumption-dk-areas_2017_daily.xlsx", 
+    skip = 2)
+consumption_dk_areas_2018_daily <- read_excel("C:/Users/rasmu/Dropbox/P-Sex/Data/comsumption/consumption-dk-areas_2018_daily.xlsx", 
+    skip = 2)
+consumption_dk_areas_2019_daily <- read_excel("C:/Users/rasmu/Dropbox/P-Sex/Data/comsumption/consumption-dk-areas_2019_daily.xlsx", 
+    skip = 2)
+
+# El priser 2017-2019
+Elspot_priser_2017 <- read_excel("C:/Users/rasmu/Dropbox/P-Sex/Data/Elspot-priser/Elspot-priser_2017.xlsx")
+Elspot_priser_2018 <- read_excel("C:/Users/rasmu/Dropbox/P-Sex/Data/Elspot-priser/Elspot-priser_2018.xlsx")
+Elspot_priser_2019 <- read_excel("C:/Users/rasmu/Dropbox/P-Sex/Data/Elspot-priser/Elspot-priser_2019.xlsx")
+
+EL_pris <- bind_rows(Elspot_priser_2017,Elspot_priser_2018,Elspot_priser_2019) %>%
+  select(c(...1,DK1,DK2)) %>% group_by(...1) %>% summarize(mean_price = mean(DK1,DK2))
+
+EL_forbrug <- bind_rows(consumption_dk_areas_2017_daily,consumption_dk_areas_2018_daily,
+                        consumption_dk_areas_2019_daily) %>% select(...1, DK)
+
+data_forbrug_pris <- inner_join(EL_pris, EL_forbrug,by = "...1") %>% `colnames<-`(c("date", "Price", "Consumption"))
+
+
+# co2 2017-2019
+co2_2017 <- read_excel("C:/Users/rasmu/Dropbox/P-Sex/Data/CO2/co2-2017.xlsx")
+co2_2018 <- read_excel("C:/Users/rasmu/Dropbox/P-Sex/Data/CO2/co2-2018.xlsx")
+co2_2019 <- read_excel("C:/Users/rasmu/Dropbox/P-Sex/Data/CO2/co2-2019.xlsx")
+co2_fuld <- bind_rows(co2_2017,co2_2018,co2_2019)
+
+co2 <- filter(co2_fuld, PriceArea == "DK1")
+co2 <- co2[,-c(1,3)]
+
+out <- co2[(order(as.Date(co2$Minutes5DK))),]
+out <- out %>% `colnames<-`(c("date", "emission"))
+out$date <- as_datetime(out$date)
+
+data <- out %>% mutate(date = as_date(date)) %>% group_by(date) %>% summarize(mean_emission = mean(emission))
+
+# All data
+data_total <- bind_cols(data_forbrug_pris, data)[,-4]
+data_total$date <- as.Date(data_total$date)
+data_ts <- as.ts(data_total[,-1])
+
+
+
+```
+
+
+```{r}
+
+plot.ts(data_ts)
+
+# consumption looks seasonal
+
+adf.test(data_ts[,1])
+adf.test(data_ts[,2])
+adf.test(data_ts[,3])
+
+
+decomposedRes <- decompose(ts(data_total$Consumption, frequency = 12), type="mult")
+plot(decomposedRes)
+
+VAR_result <- VARselect(data_ts, lag.max = 10, type = "both")
+VAR_result$selection
+
+p1ct <- VAR(data_ts, p = 8)
+p1ct
+
+plot(predict(p1ct, n.ahead = 150))
+
+ser11 <- serial.test(p1ct, lags.pt = 16, type = "PT.asymptotic")
+ser11
+
+norm1 <- normality.test(p1ct)
+norm1$jb.mul
+
+```
+
+

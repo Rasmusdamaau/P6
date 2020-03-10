@@ -12,6 +12,9 @@ library(readxl)
 library(urca)
 library(lubridate)
 library(openair)
+library(tseries)
+library(forecast)
+
 
 ```
 
@@ -20,14 +23,38 @@ library(openair)
 
 # data("Canada")
 
+consumption_dk_areas_2017_daily <- read_excel("C:/Users/rasmu/Dropbox/P-Sex/Data/comsumption/consumption-dk-areas_2017_daily.xlsx", 
+    skip = 2)
+consumption_dk_areas_2018_daily <- read_excel("C:/Users/rasmu/Dropbox/P-Sex/Data/comsumption/consumption-dk-areas_2018_daily.xlsx", 
+    skip = 2)
+consumption_dk_areas_2019_daily <- read_excel("C:/Users/rasmu/Dropbox/P-Sex/Data/comsumption/consumption-dk-areas_2019_daily.xlsx", 
+    skip = 2)
+
+Elspot_priser_2017 <- read_excel("C:/Users/rasmu/Dropbox/P-Sex/Data/Elspot-priser/Elspot-priser_2017.xlsx")
+Elspot_priser_2018 <- read_excel("C:/Users/rasmu/Dropbox/P-Sex/Data/Elspot-priser/Elspot-priser_2018.xlsx")
 Elspot_priser_2019 <- read_excel("C:/Users/rasmu/Dropbox/P-Sex/Data/Elspot-priser/Elspot-priser_2019.xlsx")
 
-EL_forbrug_2019 <- read_excel("C:/Users/rasmu/Dropbox/P-Sex/Data/Elspot-priser/EL_forbrug_2019.xlsx")
 
-EL_pris <- Elspot_priser_2019 %>% select(c(...1,DK1))
-EL_forbrug <- EL_forbrug_2019
+
+EL_pris <- bind_rows(Elspot_priser_2017,Elspot_priser_2018,Elspot_priser_2019) %>%
+  select(c(...1,DK1,DK2)) %>% group_by(...1) %>% summarize(mean_price = mean(DK1,DK2))
+
+EL_forbrug <- bind_rows(consumption_dk_areas_2017_daily,consumption_dk_areas_2018_daily,
+                        consumption_dk_areas_2019_daily) %>% select(...1, DK)
 
 data_forbrug_pris <- inner_join(EL_pris, EL_forbrug,by = "...1") %>% `colnames<-`(c("date", "Price", "Consumption"))
+
+plot(data_forbrug_pris$Price ~ data_forbrug_pris$date, type = "l")
+plot(data_forbrug_pris$Consumption ~ data_forbrug_pris$date, type = "l")
+
+plot(decompose(ts(data_forbrug_pris$Consumption, frequency = 365)))
+stlRes <- stl(ts(data_forbrug_pris$Consumption, frequency = 365), s.window = "periodic")
+
+ts.sa <- seasadj(stlRes)  # de-seasonalize
+plot(data_forbrug_pris$Consumption, type="l")  # original series
+plot(ts.sa, type="l")  # seasonal adjusted
+seasonplot(ts.sa, 12, col=rainbow(12), year.labels=TRUE, main="Seasonal plot: Airpassengers") # seasonal frequency set as 12 for monthly data.
+
 
 d_ts <- as.ts(data_forbrug_pris[,-1])
 
@@ -70,10 +97,14 @@ norm1$jb.mul
 
 # co2_fuld <- read_excel("C:/Users/rasmu/Dropbox/P-Sex/Data/CO2/co2emis-dee2c245157047d6a4743124d7660ae6.xlsx")
 
-co2_fuld <- read_excel("C:/Users/rasmu/Dropbox/P-Sex/Data/CO2/co2-2019.xlsx")
+co2_2017 <- read_excel("C:/Users/rasmu/Dropbox/P-Sex/Data/CO2/co2-2017.xlsx")
+co2_2018 <- read_excel("C:/Users/rasmu/Dropbox/P-Sex/Data/CO2/co2-2018.xlsx")
+co2_2019 <- read_excel("C:/Users/rasmu/Dropbox/P-Sex/Data/CO2/co2-2019.xlsx")
 
+co2_fuld <- bind_rows(co2_2017,co2_2018,co2_2019)
 
-co2 <- co2_fuld[,-c(1,3)]
+co2 <- filter(co2_fuld, PriceArea == "DK1")
+co2 <- co2[,-c(1,3)]
 
 out <- co2[(order(as.Date(co2$Minutes5DK))),]
 out <- out %>% `colnames<-`(c("date", "udledning"))
@@ -88,9 +119,11 @@ plot(ts_co2)
 
 data <- out %>% mutate(date = as_date(date)) %>% group_by(date) %>% summarize(mean_udledning = mean(udledning))
 
+
 summary(data)
 
 ts_udledning <- as.ts(data[,-1])
+adf.test(ts_udledning)
 
 plot(ts_udledning)
 
@@ -150,12 +183,6 @@ ser11
 norm1 <- normality.test(p1ct)
 norm1$jb.mul
 
-grangertest(x = ts_data[,1], y = ts_data[,2])
-grangertest(ts_data[,1], ts_data[,3])
-grangertest(ts_data[,2], ts_data[,3])
-grangertest(ts_data[,3], ts_data[,2], order = 6)
-grangertest(ts_data[,3], ts_data[,1])
-
 
 granger <- function(data) {
   for (i in 1:ncol(data)) {
@@ -171,10 +198,37 @@ granger(ts_data)
 ```
 
 
+```{r}
+# test for stationarity
+
+adf.test(ts_data[,1]) # p-value < 0.05 indicates the TS is stationary
+kpss.test(ts_data[,1])
+
+adf.test(ts_data[,2]) # p-value < 0.05 indicates the TS is stationary
+kpss.test(ts_data[,2])
+
+adf.test(ts_data[,3]) # p-value < 0.05 indicates the TS is stationary
+kpss.test(ts_data[,3])
 
 
 
 
+```
+
+# standardiserede fejl, qq-plot osv
+
+
+# tjek det her til at finde de individuelle TS
+
+```{r}
+library(forecast)
+fit <- Arima(oil.price, order=c(3,1,1))
+summary(fit)
+
+modArima <- auto.arima(ts.sa) # specielt den her
+modArima
+arimaorder(modArima)
+```
 
 
 
