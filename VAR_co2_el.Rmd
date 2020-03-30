@@ -1,6 +1,8 @@
 ---
 title: "VAR_co2_el"
-output: html_document
+output:
+  html_document: default
+  pdf_document: default
 ---
 
 ```{r setup, include=FALSE}
@@ -11,7 +13,7 @@ library(tidyverse)
 library(readxl)
 library(urca)
 library(lubridate)
-library(openair)
+#library(openair)
 library(tseries)
 library(forecast)
 ```
@@ -19,20 +21,20 @@ library(forecast)
 
 # Data from Nordpool
 
-```{r}
+```{r message=FALSE, include=FALSE}
 
 # El-forbrug 2017-2019
-consumption_dk_areas_2017_daily <- read_excel("C:/Users/rasmu/Dropbox/P-Sex/Data/comsumption/consumption-dk-areas_2017_daily.xlsx", 
+consumption_dk_areas_2017_daily <- read_excel("C:/Users/rasmus dam/Dropbox/P-Sex/Data/comsumption/consumption-dk-areas_2017_daily.xlsx", 
     skip = 2)
-consumption_dk_areas_2018_daily <- read_excel("C:/Users/rasmu/Dropbox/P-Sex/Data/comsumption/consumption-dk-areas_2018_daily.xlsx", 
+consumption_dk_areas_2018_daily <- read_excel("C:/Users/rasmus dam/Dropbox/P-Sex/Data/comsumption/consumption-dk-areas_2018_daily.xlsx", 
     skip = 2)
-consumption_dk_areas_2019_daily <- read_excel("C:/Users/rasmu/Dropbox/P-Sex/Data/comsumption/consumption-dk-areas_2019_daily.xlsx", 
+consumption_dk_areas_2019_daily <- read_excel("C:/Users/rasmus dam/Dropbox/P-Sex/Data/comsumption/consumption-dk-areas_2019_daily.xlsx", 
     skip = 2)
 
 # El priser 2017-2019
-Elspot_priser_2017 <- read_excel("C:/Users/rasmu/Dropbox/P-Sex/Data/Elspot-priser/Elspot-priser_2017.xlsx")
-Elspot_priser_2018 <- read_excel("C:/Users/rasmu/Dropbox/P-Sex/Data/Elspot-priser/Elspot-priser_2018.xlsx")
-Elspot_priser_2019 <- read_excel("C:/Users/rasmu/Dropbox/P-Sex/Data/Elspot-priser/Elspot-priser_2019.xlsx")
+Elspot_priser_2017 <- read_excel("C:/Users/rasmus dam/Dropbox/P-Sex/Data/Elspot-priser/Elspot-priser_2017.xlsx")
+Elspot_priser_2018 <- read_excel("C:/Users/rasmus dam/Dropbox/P-Sex/Data/Elspot-priser/Elspot-priser_2018.xlsx")
+Elspot_priser_2019 <- read_excel("C:/Users/rasmus dam/Dropbox/P-Sex/Data/Elspot-priser/Elspot-priser_2019.xlsx")
 
 EL_pris <- bind_rows(Elspot_priser_2017,Elspot_priser_2018,Elspot_priser_2019) %>%
   select(c(...1,DK1,DK2)) %>% group_by(...1) %>% summarize(mean_price = mean(DK1,DK2))
@@ -44,9 +46,9 @@ data_forbrug_pris <- inner_join(EL_pris, EL_forbrug,by = "...1") %>% `colnames<-
 
 
 # co2 2017-2019
-co2_2017 <- read_excel("C:/Users/rasmu/Dropbox/P-Sex/Data/CO2/co2-2017.xlsx")
-co2_2018 <- read_excel("C:/Users/rasmu/Dropbox/P-Sex/Data/CO2/co2-2018.xlsx")
-co2_2019 <- read_excel("C:/Users/rasmu/Dropbox/P-Sex/Data/CO2/co2-2019.xlsx")
+co2_2017 <- read_excel("C:/Users/rasmus dam/Dropbox/P-Sex/Data/CO2/co2-2017.xlsx")
+co2_2018 <- read_excel("C:/Users/rasmus dam/Dropbox/P-Sex/Data/CO2/co2-2018.xlsx")
+co2_2019 <- read_excel("C:/Users/rasmus dam/Dropbox/P-Sex/Data/CO2/co2-2019.xlsx")
 co2_fuld <- bind_rows(co2_2017,co2_2018,co2_2019)
 
 co2 <- filter(co2_fuld, PriceArea == "DK1")
@@ -64,38 +66,157 @@ data_total$date <- as.Date(data_total$date)
 data_ts <- as.ts(data_total[,-1])
 
 
+```
+
+# Deseasonalize consumption
+
+```{r}
+
+consum <- data.frame(t =  time(data_total$Consumption), consumption = data_total$Consumption)
+plot.ts(data_ts[,2])
+weekend_i <- ifelse((seq_along(consum$t) -1) %% 7 ==0 | (seq_along(consum$t)) %% 7 ==0, 1,0)
+
+nls_consum <- nls(formula = consumption ~ b_0 + b_1 * t + b_2 * I(t)^2 + c_1 * sin((t + c_2)* (2*pi)/365) + 
+      c_3 * sin((t + c_4)* 4*pi/365) + d_1 * weekend_i,
+      data = consum,
+      start = list(b_0 = 1, b_1 = 1, b_2 = 1, c_1 = 1, c_2 = 1, c_3 = 1, c_4 = 1, d_1 = 1))
+summary(nls_consum)
+
+plot(consum$t, consum$consumption)
+lines(consum$t, predict(nls_consum), col = "red")
+
+deseason <- residuals(nls_consum)
+plot.ts(deseason)
+
+adf.test(deseason)
 
 ```
+
 
 
 ```{r}
 
 plot.ts(data_ts)
 
-# consumption looks seasonal
+# consumption looks seasonal, we deseasonalized this earlier and will use that now
+
+data_ts[,"Consumption"] <- as.ts(deseason)
+
+plot.ts(data_ts)
 
 adf.test(data_ts[,1])
 adf.test(data_ts[,2])
 adf.test(data_ts[,3])
 
+acf(data_ts)
+pacf(data_ts)
 
-decomposedRes <- decompose(ts(data_total$Consumption, frequency = 12), type="mult")
-plot(decomposedRes)
 
 VAR_result <- VARselect(data_ts, lag.max = 10, type = "both")
 VAR_result$selection
 
-p1ct <- VAR(data_ts, p = 8)
+p1ct <- VAR(data_ts, p = 2)
+roots(p1ct)
+summary(p1ct)
+plot(p1ct)
 p1ct
-
-plot(predict(p1ct, n.ahead = 150))
 
 ser11 <- serial.test(p1ct, lags.pt = 16, type = "PT.asymptotic")
 ser11
+plot(ser11)
 
 norm1 <- normality.test(p1ct)
 norm1$jb.mul
+plot(norm1)
+
+fanchart(predict(p1ct, n.ahead = 100), xlim = c(1000,1150))
+
+impuls <- irf(p1ct, impulse = "Consumption",response = c("Price", "mean_emission"), boot = F)
+impuls <- irf(p1ct, boot = F, ortho = F, cumulative = T)
+print(impuls)
+plot(impuls)
+
+forecast_error <- fevd(p1ct)
+print(forecast_error)
+plot(forecast_error)
+
+
+
+
+
+arch1 <- arch.test(p1ct)
+print(arch1)
+plot(arch1)
+
+plot(stability(p1ct))
+
+summary(ca.jo(data_total[,-1], type = "trace", ecdet = "trend", K = 8, spec = "transitory"))
+
+
+vars::Bcoef(p1ct)
+vars::causality(p1ct)
+vars::stability(p1ct)
+
 
 ```
 
+```{r}
+amat <- diag(4)
+diag(amat) <- NA
+amat[2, 1] <- NA
+amat[4, 1] <- NA
+
+
+amat <- diag(3)
+diag(amat) <- NA
+amat[2,1] <- NA
+
+SVAR(p1ct, Amat = amat,estmethod = "direct", hessian = T, method = "BFGS")
+
+
+
+vars::Phi(p1ct)
+vars::Psi(p1ct)
+
+```
+
+
+<!-- ```{r virker ikke forsog paa deaseasonalize, eval=FALSE, include=FALSE} -->
+
+<!-- consum <- data.frame(t =  time(data_total$Consumption), consumption = data_total$Consumption) -->
+
+<!-- lm_desea <- lm(consumption ~ t + sin(t * (2*pi)/365) + sin(t * (4*pi)/365), data = consum) -->
+
+<!-- lm_desea <- lm() -->
+<!-- summary(lm_desea) -->
+
+<!-- plot_data <- bind_cols(consum,predicted = predict(lm_desea)) -->
+
+<!-- ggplot(plot_data, aes(t,consumption)) + -->
+<!--   geom_point() +  -->
+<!--   geom_point(aes(t,predicted)) -->
+
+<!-- plot.ts(plot_data$consumption - plot_data$predicted) -->
+
+
+<!-- #fit <- lm(unlist(dk1f[2]) ~ t + I(t^2)+ -->
+<!-- #            sin((t)(2pi)/(365))+cos((t)(2pi)/365)+ -->
+<!-- #            sin((4pi/365)t) + cos((4pi/365)t)+ -->
+<!-- #            sin((8pi/365)t) + cos((8pi/365)t) +  -->
+<!-- #            dummy.sat + dummy.sun) -->
+<!-- #summary(fit) -->
+
+<!-- consum_ts <- ts(data_total$Consumption) -->
+<!-- findfrequency(consum_ts) -->
+<!-- consum_ts <- ts(data_total$Consumption, frequency = 7) -->
+<!-- deco_consum_ts <- decompose(consum_ts) -->
+<!-- plot(seasadj(deco_consum_ts)) -->
+<!-- season1 <- seasadj(deco_consum_ts) -->
+<!-- findfrequency(season1) -->
+<!-- s1ts <- ts(seasadj(deco_consum_ts), frequency = 365) -->
+<!-- deco_s1ts <- decompose(s1ts) -->
+<!-- plot(seasadj(deco_s1ts)) -->
+<!-- plot(consum_ts) -->
+<!-- findfrequency(seasadj(deco_s1ts)) -->
+<!-- ``` -->
 
