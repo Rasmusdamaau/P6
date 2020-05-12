@@ -19,8 +19,11 @@ library(tidyverse)
 library(hrbrthemes)
 
 library(Hmisc)
+library(gridExtra)
 
+library(astsa)
 
+library(ggpubr)
 ```
 
 
@@ -124,89 +127,468 @@ gg_data_ts <- data.frame(time = as.Date("2017-1-1") + 0:1094, data_ts)
 
 ```
 
+# Esbens funktioner
+
+```{r}
+polymult <- function(x,a,b)
+  # a(B) = a_0 + a_1*B + a_2*B² + ... + a_p*B^p
+  # b(B) = b_0 + b_1*B + b_2*B² + ... + a_q*B^q
+  # where wlog p >= q
+  # Result is a(B)b(B) x_t
+{
+  if (length(b) == 1){polycoeff <- b[1]*array(a)}
+  else
+  {alpha <- array(a)
+  p <- dim(alpha) - 1
+  beta <- array(b)
+  q <- dim(beta) - 1
+  # Assumed: p >= q
+  polycoeff <- array(rep(0,p+q + 1))
+  for (k in 0:(p+q))
+    for (j in max(0,k-q):min(k,p))
+    {polycoeff[k+1] <- polycoeff[k+1] + alpha[j+1]*beta[k-j+1]}
+  }
+  return(stats::filter(x,c(polycoeff),sides=1, method="convolution"))
+}
+
+polyinvers <- function (x, a, maxlag = 30)
+  # a(B) = a_0 + a_1*B + a_2*B² + ... + a_p*B^p
+  # Result is (1/a(B)) x_t
+{
+  phi <- array(a)
+  p <- dim(phi) - 1 # assumed >= 1
+  polycoeff <- array(rep(0,maxlag))
+  polycoeff[1] <- 1/phi[1]
+  for (k in 1:(maxlag - 1))
+    for (j in (1:min(p,k)))
+    {polycoeff[k+1] <- polycoeff[k+1] - phi[j+1]*polycoeff[k-j+1]/phi[1]}
+  return(stats::filter(x,c(polycoeff),sides=1, method="convolution"))
+}
+```
+
 
 
 
 # Deseasonalize consumption
 
+## Esbens metode
 ```{r}
 
 consum <- data.frame(t =  time(data_total$Consumption), consumption = data_total$Consumption)
+acf2(consum$consumption)
 plot.ts(data_ts[,2])
 weekend_i <- ifelse((seq_along(consum$t) -1) %% 7 ==0 | (seq_along(consum$t)) %% 7 ==0, 1,0)
+weekday_i <- ifelse(weekend_i==1, 0, 1)
 
-nls_consum <- nls(formula = consumption ~ b_0 + b_1 * t + b_2 * I(t)^2 + c_1 * sin((t + c_2)* (2*pi)/365) + 
-                    c_3 * sin((t + c_4)* 4*pi/365) + d_1 * weekend_i,
-                  data = consum,
-                  start = list(b_0 = 1, b_1 = 1, b_2 = 1, c_1 = 1,
-                               c_2 = 1, c_3 = 1, c_4 = 1, d_1 = 1))
-sum_nls_consum <- summary(nls_consum)
-sum_nls_consum$parameters
-# latex(sum_nls_consum$parameters)
+lm_consum <- lm(consumption ~ t + t^2 +
+                  cos((2*pi*t)/365) + sin((2*pi*t)/365) + 
+                  cos((4*pi*t)/365) + sin((4*pi*t)/365) + 
+                  weekday_i, data = consum)
 
-
-plot(consum$t, consum$consumption)
-lines(consum$t, predict(nls_consum), col = "red")
-
-
-deseason_consum <- residuals(nls_consum)
+summary(lm_consum)
+# View(summary(lm_consum))
+# latex(summary(lm_consum)[["coefficients"]], title = "consumption_coef.tex", rowname = c("$b_0$",
+#                                                                           "$b_1$",
+#                                                                           "$b_2$",
+#                                                                           "$K_1$", "$K_2$", "$K_3$",
+#                                                                           "$K_4$"), digits = 2)
+deseason_consum <- residuals(lm_consum)
 plot.ts(deseason_consum)
 
 consumption_gg <- data.frame(Time = data_total$date, Consumption = consum$consumption,
-                             Season = predict(nls_consum), Deseason_consumption = deseason_consum)
+                              Season = predict(lm_consum), Deseason_consumption = deseason_consum)
 
 
-# pdf(file = "season_consumption.pdf",height = 2.5,width = 8)
-# ggplot(consumption_gg, aes(x = Time, y = Consumption)) +
-#   geom_point() +
-#   geom_line(aes(x = Time, y = Season), color = "red", alpha = 0.8, size = 0.5) +
-#   scale_x_date(date_labels = "%Y %b %d") +
-#   xlab("")
+# pdf(file = "season_consumption.pdf",height = 2.5,width = 8) 
+ggplot(consumption_gg, aes(x = Time, y = Consumption)) + 
+  geom_point() + 
+  geom_line(aes(x = Time, y = Season), color = "red", alpha = 0.8, size = 0.5) + 
+  scale_x_date(date_labels = "%Y %b %d") + 
+  xlab("") 
 # dev.off()
 
 # pdf(file = "deseason_consumption.pdf",height = 2.5,width = 8)
-# ggplot(consumption_gg, aes(x = Time, y = Deseason_consumption)) +
-#   geom_line(alpha = 0.8) +
-#   scale_x_date(date_labels = "%Y %b %d") +
-#   xlab("") +
-#   ylab("Deseasonalized consumption")
+ggplot(consumption_gg, aes(x = Time, y = Deseason_consumption)) +
+  geom_line(alpha = 0.8) +
+  scale_x_date(date_labels = "%Y %b %d") +
+  xlab("") +
+  ylab("Deseasonalized consumption")
+# dev.off()
+
+# acf, pacf 
+
+acf2_deseason_consum <- acf2(deseason_consum)
+gg_acf_pacf_d_consum <- tibble(lag = seq_along(acf2_deseason_consum[,1]),
+                               acf = acf2_deseason_consum[,1],
+                               pacf = acf2_deseason_consum[,2])
+
+
+deseason_consum_acf_plot <- ggplot(data = gg_acf_pacf_d_consum, aes(x = lag, y = acf)) +
+  geom_hline(aes(yintercept = 0)) +
+  geom_segment(mapping = aes(xend = lag, yend = 0)) +
+  geom_hline(aes(yintercept = 0.05), linetype = "dashed", color = "blue", size = 0.5, alpha = 0.5) +
+  geom_hline(aes(yintercept = -0.05), linetype = "dashed", color = "blue", size = 0.5, alpha = 0.5) +
+  ylab("ACF") +
+  xlab("Lag")
+
+deseason_consum_pacf_plot <- ggplot(data = gg_acf_pacf_d_consum, aes(x = lag, y = pacf)) +
+  geom_hline(aes(yintercept = 0)) +
+  geom_segment(mapping = aes(xend = lag, yend = 0)) +
+  geom_hline(aes(yintercept = 0.05), linetype = "dashed", color = "blue", size = 0.5, alpha = 0.5) +
+  geom_hline(aes(yintercept = -0.05), linetype = "dashed", color = "blue", size = 0.5, alpha = 0.5) +
+  ylab("PACF") +
+  xlab("Lag")
+
+# pdf(file = "deseason_consum_acf2.pdf",height = 2.5,width = 8)
+grid.arrange(deseason_consum_acf_plot, deseason_consum_pacf_plot, ncol=2)
 # dev.off()
 
 
-season_consum <- predict(nls_consum)
-plot.ts(season_consum)
-adf_consum <- adf.test(deseason_consum)
+# Box.test(deseason_consum, lag=25, type="Ljung-Box")
+plot(consum$t, consum$consumption)
+# lines(consum$t, predict(nls_consum), col = "red")
+plot.ts(diff(deseason_consum))
+Box.test(diff(deseason_consum), lag=25, type="Ljung-Box")
+
+acf2(diff(diff(deseason_consum)))
+acf2(deseason_consum)
+
+
+
+
+# str(consum$consumption)
+# consum_ts <- ts(data = consum$consumption, frequency = 7)
+# deseason_consum_ts <- ts(deseason_consum, frequency = 7)
+# aa_consum <- auto.arima(deseason_consum_ts,seasonal = T)
+# aa_consum
+# plot.ts(residuals(aa_consum))
+# acf2(residuals(aa_consum))
+# Box.test(residuals(aa_consum), lag=25, type="Ljung-Box")
+
+
+s_int <- 7
+sarima_consum <- astsa::sarima(xdata = deseason_consum,
+                               p = 1,d = 0,q = 0,
+                               P = 0,D = 1,Q = 3,
+                               S = s_int,
+                               no.constant = T)
+sarima_consum$ttable
+plot.ts(sarima_consum$fit$residuals)
+
+# latex(sarima_consum$ttable, file = "sarima_coef.tex", digits = 2)
+
+
+# pdf(file = "sarima_residuals.pdf",height = 2.5,width = 8)
+ggplot(data = tibble(Residuals = sarima_consum$fit$residuals,
+                     Time = seq_along(sarima_consum$fit$residuals)), aes(x = Time, y = Residuals)) +
+  geom_line()
+# dev.off()
+
+sarima_acf2 <- acf2(sarima_consum$fit$residuals)
+gg_acf_pacf_sarima <- tibble(lag = seq_along(sarima_acf2[,1]),
+                               acf = sarima_acf2[,1],
+                               pacf = sarima_acf2[,2])
+
+sarima_acf_plot <- ggplot(data = gg_acf_pacf_sarima, aes(x = lag, y = acf)) +
+  geom_hline(aes(yintercept = 0)) +
+  geom_segment(mapping = aes(xend = lag, yend = 0)) +
+  geom_hline(aes(yintercept = 0.05), linetype = "dashed", color = "blue", size = 0.5, alpha = 0.5) +
+  geom_hline(aes(yintercept = -0.05), linetype = "dashed", color = "blue", size = 0.5, alpha = 0.5) +
+  ylab("ACF") +
+  xlab("Lag") +
+  coord_cartesian(xlim = c(-1,46), ylim = c(-0.3,1))
+
+sarima_pacf_plot <- ggplot(data = gg_acf_pacf_sarima, aes(x = lag, y = pacf)) +
+  geom_hline(aes(yintercept = 0)) +
+  geom_segment(mapping = aes(xend = lag, yend = 0)) +
+  geom_hline(aes(yintercept = 0.05), linetype = "dashed", color = "blue", size = 0.5, alpha = 0.5) +
+  geom_hline(aes(yintercept = -0.05), linetype = "dashed", color = "blue", size = 0.5, alpha = 0.5) +
+  ylab("PACF") +
+  xlab("Lag") +
+  coord_cartesian(xlim = c(-1,46), ylim = c(-0.3,1))
+
+# pdf(file = "sarima_acf_pacf.pdf",height = 2.5,width = 8)
+grid.arrange(sarima_acf_plot, sarima_pacf_plot, ncol=2)
+# dev.off()
+
+koefs_consum <- sarima_consum$fit$coef
+koefs_consum
+
+koefs_ar <- koefs_consum[1]
+# koefs_ma <- koefs_consum[3:4]
+koefs_ma <- 0
+# koefs_sar <- koefs_consum[2:4]
+koefs_sar <- 0
+koefs_sma <- koefs_consum[2:4]
+# koefs_sma <- 0
+
+koefs_saeson_Phi <- c(1,rep(0,s_int-1),-koefs_sar)
+koefs_saeson_Theta <- c(1,rep(0,s_int-1),koefs_sma)
+
+# mellemregning <- polymult(diff(diff(deseason_consum,s_int),1),koefs_saeson_Phi,1)
+# armadata <- polyinvers(mellemregning,koefs_saeson_Theta)
+# acf2(armadata)
+# 
+# plot.ts(armadata)
+
+
+mellemregning <- polymult(diff(deseason_consum,s_int),koefs_saeson_Phi,1)
+plot.ts(mellemregning)
+armadata <- polyinvers(mellemregning,koefs_saeson_Theta,maxlag = 30)
+
+acf(na.omit(armadata),lag.max = 365)
+pacf(na.omit(armadata), lag.max = 365)
+
+plot.ts(armadata)
+
+
+arma_ts <- data.frame(time = as.Date("2017-1-1") + 37:1088,arma =  na.omit(armadata))
+
+# pdf(file = "arma_ts.pdf",height = 2.5,width = 8)
+ggplot(data = arma_ts, aes(x = time, y = arma)) +
+  geom_line(alpha = 0.8) +
+  xlab("") +
+  scale_x_date(date_labels = "%Y %b %d")
+# dev.off()
+
+
+arma_consum_acf2 <- acf2(armadata, max.lag = 30)
+gg_acf_pacf_arma <- tibble(lag = seq_along(arma_consum_acf2[,1]),
+                               acf = arma_consum_acf2[,1],
+                               pacf = arma_consum_acf2[,2])
+
+arma_acf_plot <- ggplot(data = gg_acf_pacf_arma, aes(x = lag, y = acf)) +
+  geom_hline(aes(yintercept = 0)) +
+  geom_segment(mapping = aes(xend = lag, yend = 0)) +
+  geom_hline(aes(yintercept = 0.05), linetype = "dashed", color = "blue", size = 0.5, alpha = 0.5) +
+  geom_hline(aes(yintercept = -0.05), linetype = "dashed", color = "blue", size = 0.5, alpha = 0.5) +
+  ylab("ACF") +
+  xlab("Lag") +
+  coord_cartesian(xlim = c(-1,30), ylim = c(-0.3,1))
+
+arma_pacf_plot <- ggplot(data = gg_acf_pacf_arma, aes(x = lag, y = pacf)) +
+  geom_hline(aes(yintercept = 0)) +
+  geom_segment(mapping = aes(xend = lag, yend = 0)) +
+  geom_hline(aes(yintercept = 0.05), linetype = "dashed", color = "blue", size = 0.5, alpha = 0.5) +
+  geom_hline(aes(yintercept = -0.05), linetype = "dashed", color = "blue", size = 0.5, alpha = 0.5) +
+  ylab("PACF") +
+  xlab("Lag") +
+  coord_cartesian(xlim = c(-1,30), ylim = c(-0.3,1))
+
+# pdf(file = "arma_acf_pacf.pdf",height = 2.5,width = 8)
+grid.arrange(arma_acf_plot, arma_pacf_plot, ncol=2)
+# dev.off()
+
+deseason_consum <- armadata
+
+adf.test(na.omit(armadata))
+
+acf2(deseason_consum,max.lag = 1000)
 
 ```
 
+## lm, escribano
+
+<!-- ```{r} -->
+<!-- load("D:/OneDrive - Aalborg Universitet/0P6/Git_repo/P6/data_total.RDA") -->
+<!-- load("D:/OneDrive - Aalborg Universitet/0P6/Git_repo/P6/data_ts.RDA") -->
+
+<!-- consum <- data.frame(t =  time(data_total$Consumption), consumption = data_total$Consumption) -->
+<!-- plot.ts(data_ts[,2]) -->
+<!-- acf2(consum$consumption) -->
+<!-- weekend_i <- ifelse((seq_along(consum$t) -1) %% 7 ==0 | (seq_along(consum$t)) %% 7 ==0, 1,0) -->
+<!-- weekday_i <- ifelse(weekend_i==1, 0, 1) -->
+
+<!-- lm_consum <- lm(consumption ~ t + t^2 + -->
+<!--                   cos((2*pi*t)/365) + sin((2*pi*t)/365) +  -->
+<!--                   cos((4*pi*t)/365) + sin((4*pi*t)/365) +  -->
+<!--                   weekday_i, data = consum) -->
+
+<!-- summary(lm_consum) -->
+<!-- deseason_consum <- residuals(lm_consum) -->
+<!-- plot.ts(deseason_consum) -->
+<!-- acf2(deseason_consum) -->
+
+<!-- consum_ts <- ts(data = consum$consumption, frequency = 7) -->
+<!-- deseason_consum_ts <- ts(deseason_consum, frequency = 7) -->
+<!-- aa_consum <- auto.arima(deseason_consum_ts,seasonal = T) -->
+<!-- aa_consum -->
+
+<!-- s_int <- 7 -->
+<!-- sarima_consum <- astsa::sarima(xdata = deseason_consum, -->
+<!--                                p = 1,d = 0,q = 0, -->
+<!--                                P = 2,D = 0,Q = 0, -->
+<!--                                S = s_int, -->
+<!--                                no.constant = T) -->
+<!-- sarima_consum$ttable -->
+<!-- plot.ts(sarima_consum$fit$residuals) -->
+<!-- acf2(sarima_consum$fit$residuals) -->
+
+<!-- koefs_consum <- sarima_consum$fit$coef -->
+<!-- koefs_consum -->
+
+<!-- koefs_ar <- koefs_consum[1] -->
+<!-- # koefs_ma <- koefs_consum[3:4] -->
+<!-- koefs_ma <- 0 -->
+<!-- koefs_sar <- koefs_consum[2:3] -->
+<!-- # koefs_sma <- koefs_consum[5] -->
+<!-- koefs_sma <- 0 -->
+
+<!-- koefs_saeson_Phi <- c(1,rep(0,s_int-1),-koefs_sar) -->
+<!-- koefs_saeson_Theta <- c(1,rep(0,s_int-1),koefs_sma) -->
+
+<!-- mellemregning <- polymult(diff(diff(deseason_consum,s_int),1),koefs_saeson_Phi,1) -->
+<!-- armadata <- polyinvers(mellemregning,koefs_saeson_Theta) -->
+<!-- acf2(armadata) -->
+
+<!-- plot.ts(armadata) -->
+
+<!-- ``` -->
+
+
+## første, nls, escribano
+
+<!-- ```{r} -->
+
+<!-- consum <- data.frame(t =  time(data_total$Consumption), consumption = data_total$Consumption) -->
+<!-- plot.ts(data_ts[,2]) -->
+<!-- weekend_i <- ifelse((seq_along(consum$t) -1) %% 7 ==0 | (seq_along(consum$t)) %% 7 ==0, 1,0) -->
+
+<!-- nls_consum <- nls(formula = consumption ~ b_0 + b_1 * t + b_2 * I(t)^2 + -->
+<!--                     c_1 * sin((t + c_2)* (2*pi)/365) +  -->
+<!--                     c_3 * sin((t + c_4)* 4*pi/365) + d_1 * weekend_i, -->
+<!--                   data = consum, -->
+<!--                   start = list(b_0 = 1, b_1 = 1, b_2 = 1, c_1 = 1, -->
+<!--                                c_2 = 1, c_3 = 1, c_4 = 1, d_1 = 1)) -->
+<!-- sum_nls_consum <- summary(nls_consum) -->
+<!-- sum_nls_consum$parameters -->
+<!-- # latex(sum_nls_consum$parameters) -->
+
+
+<!-- plot(consum$t, consum$consumption) -->
+<!-- lines(consum$t, predict(nls_consum), col = "red") -->
+
+
+<!-- deseason_consum <- residuals(nls_consum) -->
+<!-- plot.ts(deseason_consum) -->
+<!-- acf2(deseason_consum) -->
+<!-- # Box.test(deseason_consum, lag=25, type="Ljung-Box") -->
+
+<!-- consumption_gg <- data.frame(Time = data_total$date, Consumption = consum$consumption, -->
+<!--                              Season = predict(nls_consum), Deseason_consumption = deseason_consum) -->
+
+
+<!-- # pdf(file = "season_consumption.pdf",height = 2.5,width = 8) -->
+<!-- # ggplot(consumption_gg, aes(x = Time, y = Consumption)) + -->
+<!-- #   geom_point() + -->
+<!-- #   geom_line(aes(x = Time, y = Season), color = "red", alpha = 0.8, size = 0.5) + -->
+<!-- #   scale_x_date(date_labels = "%Y %b %d") + -->
+<!-- #   xlab("") -->
+<!-- # dev.off() -->
+
+<!-- # pdf(file = "deseason_consumption.pdf",height = 2.5,width = 8) -->
+<!-- # ggplot(consumption_gg, aes(x = Time, y = Deseason_consumption)) + -->
+<!-- #   geom_line(alpha = 0.8) + -->
+<!-- #   scale_x_date(date_labels = "%Y %b %d") + -->
+<!-- #   xlab("") + -->
+<!-- #   ylab("Deseasonalized consumption") -->
+<!-- # dev.off() -->
+
+
+<!-- season_consum <- predict(nls_consum) -->
+<!-- plot.ts(season_consum) -->
+<!-- adf_consum <- adf.test(deseason_consum) -->
+
+<!-- ``` -->
+
 # deseason price
+
+## lm, escribano
+
 
 ```{r}
 
 Price <- data.frame(t =  time(data_total$Price), Price = data_total$Price)
 plot.ts(data_ts[,1])
 weekend_i <- ifelse((seq_along(Price$t) -1) %% 7 ==0 | (seq_along(Price$t)) %% 7 ==0, 1,0)
+weekday_i <- ifelse(weekend_i==1, 0, 1)
 
-nls_Price <- nls(formula = Price ~ b_0 + b_1 * t + b_2 * I(t)^2 +
-                   c_1 * sin((t + c_2)* (2*pi)/365) + 
-                   c_3 * sin((t + c_4)* 4*pi/365) + d_1 * weekend_i,
-                 data = Price,
-                 start = list(b_0 = 1, b_1 = 1, b_2 = 1,
-                              c_1 = 1, c_2 = 1, c_3 = 1, c_4 = 1, d_1 = 1))
-summary(nls_Price)
-# latex(summary(nls_Price)$parameters, title = "nls_price.tex")
+lm_price <- lm(Price ~ t + t^2 +
+                  cos((2*pi*t)/365) + sin((2*pi*t)/365) + 
+                  cos((4*pi*t)/365) + sin((4*pi*t)/365) + 
+                  weekday_i, data = Price)
+summary(lm_price)
+# View(summary(lm_price))
+# latex(summary(lm_price)[["coefficients"]], title = "price_coef.tex", rowname = c("$b_0$",
+#                                                                           "$b_1$",
+#                                                                           "$b_2$",
+#                                                                           "$K_1$", "$K_2$", "$K_3$",
+#                                                                           "$K_4$"), digits = 2)
+deseason_Price <- residuals(lm_price)
+season_Price <- predict(lm_price)
+price_gg <- data.frame(Time = data_total$date, Price = Price$Price,
+                             Season = season_Price, Deseason_Price = deseason_Price)
+
+# pdf(file = "season_price.pdf",height = 2.5,width = 8)
+ggplot(price_gg, aes(x = Time, y = Price)) + 
+  geom_point() + 
+  geom_line(aes(x = Time, y = Season), color = "red", alpha = 0.8, size = 0.5) + 
+  scale_x_date(date_labels = "%Y %b %d") + 
+  xlab("") 
+# dev.off()
+
+# pdf(file = "deseason_price.pdf",height = 2.5,width = 8)
+ggplot(price_gg, aes(x = Time, y = Deseason_Price)) +
+  geom_line(alpha = 0.8) +
+  scale_x_date(date_labels = "%Y %b %d") +
+  xlab("") +
+  ylab("Deseasonalized price")
+# dev.off()
+
+# acf, pacf 
+
+acf2_deseason_price <- acf2(deseason_Price)
+gg_acf_pacf_d_price <- tibble(lag = seq_along(acf2_deseason_price[,1]),
+                               acf = acf2_deseason_price[,1],
+                               pacf = acf2_deseason_price[,2])
+
+
+deseason_price_acf_plot <- ggplot(data = gg_acf_pacf_d_price, aes(x = lag, y = acf)) +
+  geom_hline(aes(yintercept = 0)) +
+  geom_segment(mapping = aes(xend = lag, yend = 0)) +
+  geom_hline(aes(yintercept = 0.05), linetype = "dashed", color = "blue", size = 0.5, alpha = 0.5) +
+  geom_hline(aes(yintercept = -0.05), linetype = "dashed", color = "blue", size = 0.5, alpha = 0.5) +
+  ylab("ACF") +
+  xlab("Lag")
+
+deseason_price_pacf_plot <- ggplot(data = gg_acf_pacf_d_price, aes(x = lag, y = pacf)) +
+  geom_hline(aes(yintercept = 0)) +
+  geom_segment(mapping = aes(xend = lag, yend = 0)) +
+  geom_hline(aes(yintercept = 0.05), linetype = "dashed", color = "blue", size = 0.5, alpha = 0.5) +
+  geom_hline(aes(yintercept = -0.05), linetype = "dashed", color = "blue", size = 0.5, alpha = 0.5) +
+  ylab("PACF") +
+  xlab("Lag")
+
+# pdf(file = "deseason_price_acf2.pdf",height = 2.5,width = 8)
+grid.arrange(deseason_price_acf_plot, deseason_price_pacf_plot, ncol=2)
+# dev.off()
+
+
+
 
 plot(Price$t, Price$Price)
-lines(Price$t, predict(nls_Price), col = "red")
+lines(Price$t, predict(lm_price), col = "red")
 
-deseason_Price <- residuals(nls_Price)
+deseason_Price <- residuals(lm_price)
 plot.ts(deseason_Price)
-season_Price <- predict(nls_Price)
+acf2(deseason_Price, max.lag = 1000)
+season_Price <- predict(lm_price)
 plot.ts(season_Price)
-adf.test(deseason_Price)
+# adf.test(deseason_Price)
+# Box.test(deseason_Price, lag=25, type="Ljung-Box")
 
-price_gg <- data.frame(Time = data_total$date, Price = Price$Price,
-                             Season = predict(nls_Price), Deseason_Price = deseason_Price)
+# price_gg <- data.frame(Time = data_total$date, Price = Price$Price,
+#                              Season = predict(nls_Price), Deseason_Price = deseason_Price)
 
 
 # pdf(file = "season_Price.pdf",height = 2.5,width = 8)
@@ -225,39 +607,208 @@ price_gg <- data.frame(Time = data_total$date, Price = Price$Price,
 #   ylab("Deseasonalized price")
 # dev.off()
 
+# str(Price$Price)
+# Price_ts <- ts(data = Price$Price, frequency = 2)
+# deseason_Price_ts <- ts(deseason_Price, frequency = 2)
+# aa_Price <- auto.arima(deseason_Price_ts,seasonal = T)
+# aa_Price
+# plot.ts(residuals(aa_Price))
+# acf2(residuals(aa_Price))
+# Box.test(residuals(aa_Price), lag=25, type="Ljung-Box")
+# 
+# 
+# s_int <- 2
+# sarima_consum <- astsa::sarima(xdata = deseason_consum,
+#                                p = 1,d = 1,q = 1,
+#                                P = 0,D = 0,Q = 0,
+#                                S = s_int,
+#                                no.constant = T)
+# sarima_consum$ttable
+# plot.ts(sarima_consum$fit$residuals)
+# acf2(sarima_consum$fit$residuals)
+# 
+# koefs_consum <- sarima_consum$fit$coef
+# koefs_consum
+# 
+# koefs_ar <- koefs_consum[1]
+# koefs_ma <- koefs_consum[2]
+# # koefs_ma <- 0
+# # koefs_sar <- koefs_consum[2:4]
+# koefs_sar <- 0
+# # koefs_sma <- koefs_consum[2:4]
+# koefs_sma <- 0
+# 
+# koefs_saeson_Phi <- c(1,rep(0,s_int-1),-koefs_sar)
+# koefs_saeson_Theta <- c(1,rep(0,s_int-1),koefs_sma)
+# 
+# mellemregning <- polymult(diff(diff(deseason_consum,s_int),1),koefs_saeson_Phi,1)
+# armadata <- polyinvers(mellemregning,koefs_saeson_Theta)
+# acf2(armadata)
+# 
+# plot.ts(armadata)
+# 
+# mellemregning <- polymult(diff(deseason_consum,s_int),koefs_saeson_Phi,1)
+# armadata <- polyinvers(mellemregning,koefs_saeson_Theta)
+# 
+# acf2(armadata)
+# 
+# plot.ts(armadata)
 
 ```
 
-# deseason emission
+
+
+
+## nls, escribano
+
+<!-- ```{r} -->
+
+<!-- Price <- data.frame(t =  time(data_total$Price), Price = data_total$Price) -->
+<!-- plot.ts(data_ts[,1]) -->
+<!-- weekend_i <- ifelse((seq_along(Price$t) -1) %% 7 ==0 | (seq_along(Price$t)) %% 7 ==0, 1,0) -->
+
+<!-- nls_Price <- nls(formula = Price ~ b_0 + b_1 * t + b_2 * I(t)^2 + -->
+<!--                    c_1 * sin((t + c_2)* (2*pi)/365) +  -->
+<!--                    c_3 * sin((t + c_4)* 4*pi/365) + d_1 * weekend_i, -->
+<!--                  data = Price, -->
+<!--                  start = list(b_0 = 1, b_1 = 1, b_2 = 1, -->
+<!--                               c_1 = 1, c_2 = 1, c_3 = 1, c_4 = 1, d_1 = 1)) -->
+<!-- summary(nls_Price) -->
+<!-- # latex(summary(nls_Price)$parameters, title = "nls_price.tex") -->
+
+<!-- plot(Price$t, Price$Price) -->
+<!-- lines(Price$t, predict(nls_Price), col = "red") -->
+
+<!-- deseason_Price <- residuals(nls_Price) -->
+<!-- plot.ts(deseason_Price) -->
+<!-- acf2(deseason_Price) -->
+<!-- season_Price <- predict(nls_Price) -->
+<!-- plot.ts(season_Price) -->
+<!-- # adf.test(deseason_Price) -->
+<!-- # Box.test(deseason_Price, lag=25, type="Ljung-Box") -->
+
+<!-- price_gg <- data.frame(Time = data_total$date, Price = Price$Price, -->
+<!--                              Season = predict(nls_Price), Deseason_Price = deseason_Price) -->
+
+
+<!-- # pdf(file = "season_Price.pdf",height = 2.5,width = 8) -->
+<!-- # ggplot(price_gg, aes(x = Time, y = Price)) + -->
+<!-- #   geom_point() + -->
+<!-- #   geom_line(aes(x = Time, y = Season), color = "red", alpha = 0.8, size = 0.5) + -->
+<!-- #   scale_x_date(date_labels = "%Y %b %d") + -->
+<!-- #   xlab("") -->
+<!-- # dev.off() -->
+<!-- #  -->
+<!-- # pdf(file = "deseason_price.pdf",height = 2.5,width = 8) -->
+<!-- # ggplot(price_gg, aes(x = Time, y = Deseason_Price)) + -->
+<!-- #   geom_line(alpha = 0.8) + -->
+<!-- #   scale_x_date(date_labels = "%Y %b %d") + -->
+<!-- #   xlab("") + -->
+<!-- #   ylab("Deseasonalized price") -->
+<!-- # dev.off() -->
+
+
+<!-- ``` -->
+
+# Deseason emission
+
+## lm, escribano
 
 ```{r}
-
 emission <- data.frame(t =  time(data_total$mean_emission), emission = data_total$mean_emission)
 plot.ts(data_ts[,3])
 weekend_i <- ifelse((seq_along(emission$t) -1) %% 7 ==0 | (seq_along(emission$t)) %% 7 ==0, 1,0)
+weekday_i <- ifelse(weekend_i==1, 0, 1)
 
-nls_emission <- nls(formula = emission ~ b_0 + b_1 * t + b_2 * I(t)^2 +
-                      c_1 * sin((t + c_2)* (2*pi)/365) + 
-                      c_3 * sin((t + c_4)* 4*pi/365) + d_1 * weekend_i,
-                    data = emission,
-                    start = list(b_0 = 1, b_1 = 1, b_2 = 1,
-                                 c_1 = 1, c_2 = 1, c_3 = 1, c_4 = 1, d_1 = 1))
-# summary(nls_emission)
+lm_emission <- lm(emission ~ t + t^2 +
+                  cos((2*pi*t)/365) + sin((2*pi*t)/365) + 
+                  cos((4*pi*t)/365) + sin((4*pi*t)/365) + 
+                  weekday_i, data = emission)
+summary(lm_emission)
 
-latex(summary(nls_emission)$parameters, title = "nls_emission.tex")
-
-plot(emission$t, emission$emission)
-lines(emission$t, predict(nls_emission), col = "red")
-
-deseason_emission <- residuals(nls_emission)
-plot.ts(deseason_emission)
-season_emission <- predict(nls_emission)
-plot.ts(season_emission)
-adf.test(deseason_emission)
+deseason_emission <- residuals(lm_emission)
+# plot.ts(deseason_emission)
+# acf2(deseason_emission)
+season_emission <- predict(lm_emission)
 
 
+# latex(summary(lm_emission)[["coefficients"]], title = "emission_coef.tex", rowname = c("$b_0$",
+#                                                                           "$b_1$",
+#                                                                           "$b_2$",
+#                                                                           "$K_1$", "$K_2$", "$K_3$",
+#                                                                           "$K_4$"), digits = 2)
 emission_gg <- data.frame(Time = data_total$date, Emission = emission$emission,
-                             Season = predict(nls_emission), Deseason_Emission = deseason_emission)
+                             Season = season_emission, Deseason_emission = deseason_emission)
+
+# pdf(file = "season_emission.pdf",height = 2.5,width = 8)
+ggplot(emission_gg, aes(x = Time, y = Emission)) + 
+  geom_point() + 
+  geom_line(aes(x = Time, y = Season), color = "red", alpha = 0.8, size = 0.5) + 
+  scale_x_date(date_labels = "%Y %b %d") + 
+  xlab("") 
+# dev.off()
+
+# pdf(file = "deseason_emission.pdf",height = 2.5,width = 8)
+ggplot(emission_gg, aes(x = Time, y = Deseason_emission)) +
+  geom_line(alpha = 0.8) +
+  scale_x_date(date_labels = "%Y %b %d") +
+  xlab("") +
+  ylab("Deseasonalized emission")
+# dev.off()
+
+# acf, pacf 
+
+acf2_deseason_emission <- acf2(deseason_emission)
+gg_acf_pacf_d_emission <- tibble(lag = seq_along(acf2_deseason_emission[,1]),
+                               acf = acf2_deseason_emission[,1],
+                               pacf = acf2_deseason_emission[,2])
+
+
+deseason_emission_acf_plot <- ggplot(data = gg_acf_pacf_d_emission, aes(x = lag, y = acf)) +
+  geom_hline(aes(yintercept = 0)) +
+  geom_segment(mapping = aes(xend = lag, yend = 0)) +
+  geom_hline(aes(yintercept = 0.05), linetype = "dashed", color = "blue", size = 0.5, alpha = 0.5) +
+  geom_hline(aes(yintercept = -0.05), linetype = "dashed", color = "blue", size = 0.5, alpha = 0.5) +
+  ylab("ACF") +
+  xlab("Lag")
+
+deseason_emission_pacf_plot <- ggplot(data = gg_acf_pacf_d_emission, aes(x = lag, y = pacf)) +
+  geom_hline(aes(yintercept = 0)) +
+  geom_segment(mapping = aes(xend = lag, yend = 0)) +
+  geom_hline(aes(yintercept = 0.05), linetype = "dashed", color = "blue", size = 0.5, alpha = 0.5) +
+  geom_hline(aes(yintercept = -0.05), linetype = "dashed", color = "blue", size = 0.5, alpha = 0.5) +
+  ylab("PACF") +
+  xlab("Lag")
+
+# pdf(file = "deseason_emission_acf2.pdf",height = 2.5,width = 8)
+grid.arrange(deseason_emission_acf_plot, deseason_emission_pacf_plot, ncol=2)
+# dev.off()
+
+
+
+
+
+
+
+
+
+# latex(summary(nls_emission)$parameters, title = "nls_emission.tex")
+
+# plot(emission$t, emission$emission)
+# lines(emission$t, predict(lm_emission), col = "red")
+
+# deseason_emission <- residuals(lm_emission)
+# plot.ts(deseason_emission)
+# acf2(deseason_emission)
+# season_emission <- predict(lm_emission)
+# plot.ts(season_emission)
+# adf.test(deseason_emission, k = 25)
+# Box.test(deseason_emission, lag=25, type="Ljung-Box")
+
+
+
+# emission_gg <- data.frame(Time = data_total$date, Emission = emission$emission,
+                             # Season = predict(nls_emission), Deseason_Emission = deseason_emission)
 
 # 
 # pdf(file = "season_emission.pdf",height = 2.5,width = 8)
@@ -277,20 +828,82 @@ emission_gg <- data.frame(Time = data_total$date, Emission = emission$emission,
 # dev.off()
 
 
+
 ```
 
 
+## nls, escribano
+
+<!-- ```{r} -->
+
+<!-- emission <- data.frame(t =  time(data_total$mean_emission), emission = data_total$mean_emission) -->
+<!-- plot.ts(data_ts[,3]) -->
+<!-- weekend_i <- ifelse((seq_along(emission$t) -1) %% 7 ==0 | (seq_along(emission$t)) %% 7 ==0, 1,0) -->
+
+<!-- nls_emission <- nls(formula = emission ~ b_0 + b_1 * t + b_2 * I(t)^2 + -->
+<!--                       c_1 * sin((t + c_2)* (2*pi)/365) +  -->
+<!--                       c_3 * sin((t + c_4)* 4*pi/365) + d_1 * weekend_i, -->
+<!--                     data = emission, -->
+<!--                     start = list(b_0 = 1, b_1 = 1, b_2 = 1, -->
+<!--                                  c_1 = 1, c_2 = 1, c_3 = 1, c_4 = 1, d_1 = 1)) -->
+<!-- summary(nls_emission) -->
+
+<!-- # latex(summary(nls_emission)$parameters, title = "nls_emission.tex") -->
+
+<!-- plot(emission$t, emission$emission) -->
+<!-- lines(emission$t, predict(nls_emission), col = "red") -->
+
+<!-- deseason_emission <- residuals(nls_emission) -->
+<!-- plot.ts(deseason_emission) -->
+<!-- acf2(deseason_emission) -->
+<!-- season_emission <- predict(nls_emission) -->
+<!-- plot.ts(season_emission) -->
+<!-- # adf.test(deseason_emission, k = 25) -->
+<!-- # Box.test(deseason_emission, lag=25, type="Ljung-Box") -->
+
+
+
+<!-- emission_gg <- data.frame(Time = data_total$date, Emission = emission$emission, -->
+<!--                              Season = predict(nls_emission), Deseason_Emission = deseason_emission) -->
+
+<!-- #  -->
+<!-- # pdf(file = "season_emission.pdf",height = 2.5,width = 8) -->
+<!-- # ggplot(emission_gg, aes(x = Time, y = Emission)) + -->
+<!-- #   geom_point() + -->
+<!-- #   geom_line(aes(x = Time, y = Season), color = "red", alpha = 0.8, size = 0.5) + -->
+<!-- #   scale_x_date(date_labels = "%Y %b %d") + -->
+<!-- #   xlab("") -->
+<!-- # dev.off() -->
+<!-- #  -->
+<!-- # pdf(file = "deseason_emission.pdf",height = 2.5,width = 8) -->
+<!-- # ggplot(emission_gg, aes(x = Time, y = Deseason_Emission)) + -->
+<!-- #   geom_line(alpha = 0.8) + -->
+<!-- #   scale_x_date(date_labels = "%Y %b %d") + -->
+<!-- #   xlab("") + -->
+<!-- #   ylab("Deseasonalized emission") -->
+<!-- # dev.off() -->
+
+
+<!-- ``` -->
+
+# de anvendte data
 
 ```{r}
 plot.ts(data_ts)
 
 # consumption looks seasonal, we deseasonalized this earlier and will use that now
 # Evt deseason dem alle, evt ikke
-data_ts[,"Consumption"] <- as.ts(deseason_consum)
-data_ts[,"Price"] <- as.ts(deseason_Price)
-data_ts[,"Emission"] <- as.ts(deseason_emission)
+# data_ts[,"Consumption"] <- as.ts(deseason_consum)
+# data_ts[,"Price"] <- as.ts(deseason_Price[-(1:36)])
+# data_ts[,"Emission"] <- as.ts(deseason_emission[-(1:36)])
 
+data_ts <- data.frame(Consumption = as.ts(deseason_consum[-(1:36)]), 
+                      Price = as.ts(deseason_Price[-c((1:36), (1053:1059))]),
+                      Emission = as.ts(deseason_emission[-c((1:36), (1053:1059))]))
 
+# length(deseason_consum[-(1:36)])
+# length(deseason_Price[-(1:36)])
+# length(deseason_emission[-c((1:36), (1053:1059))])
 
 # data_ts[,"Price"] <- data_ts[,"Price"] - mean(data_ts[,"Price"])
 # data_ts[,"mean_emission"] <- data_ts[,"mean_emission"] - mean(data_ts[,"mean_emission"])
@@ -301,7 +914,7 @@ plot.ts(data_ts)
 # Plots
 
 ```{r}
-gg_data_ts <- data.frame(time = as.Date("2017-1-1") + 0:1094, data_ts)
+gg_data_ts <- data.frame(time = as.Date("2017-1-1") + 37:1088, data_ts)
 ggplot(data = gg_data_ts, aes(x = time, y = Emission)) +
   geom_line() + 
   xlab("") +
@@ -320,26 +933,290 @@ ggplot(data = gg_data_ts, aes(x = time, y = Price)) +
 
 ```
 
+# modellen, p1ct
 
 ```{r}
 adf.test(data_ts[,1])
 adf.test(data_ts[,2])
 adf.test(data_ts[,3])
-
+plot.ts(data_ts)
 acf(data_ts)
 pacf(data_ts)
+colMeans(data_ts)
 
-
-VAR_result <- VARselect(data_ts, lag.max = 10, type = "both")
+VAR_result <- VARselect(data_ts, lag.max = 10, type = "const")
+VAR_result
 VAR_result$selection
-latex(VAR_result$selection)
+# latex(VAR_result$selection)
 
-p1ct <- VAR(data_ts, p = 3)
+p1ct <- VAR(data_ts, p = 3, type = "const")
+# View(p1ct)
+p1ct$obs
+acf(p1ct$y)
 roots(p1ct)
 summary(p1ct)
+# View(summary(p1ct))
 plot(p1ct)
-p1ct
+# latex(t(roots(p1ct, modulus = T)), file = "roots.tex", digits = 2)
+acf(fitted(p1ct))
+plot.ts(fitted(p1ct))
+plot.ts(data_ts)
+# latex(summary(p1ct)[["varresult"]][["Emission"]][["coefficients"]], digits = 3)
+# latex(summary(p1ct)[["varresult"]][["Consumption"]][["coefficients"]], digits = 3, title = "consumption_coef.tex")
+# latex(summary(p1ct)[["varresult"]][["Price"]][["coefficients"]], digits = 3,title = "Price_coef.tex")
+```
 
+#residual, acf, pacf plots
+
+```{r}
+acf_emission_res <- acf(p1ct$varresult$Emission$residuals)
+acf_consumption_res <- acf(p1ct$varresult$Consumption$residuals)
+acf_price_res <- acf(p1ct$varresult$Price$residuals)
+
+pacf_emission_res <- pacf(p1ct$varresult$Emission$residuals)
+pacf_consumption_res <- pacf(p1ct$varresult$Consumption$residuals)
+pacf_price_res <- pacf(p1ct$varresult$Price$residuals)
+
+gg_residuals <- tibble(Emission_res = p1ct$varresult$Emission$residuals,
+                       Consumption_res = p1ct$varresult$Consumption$residuals,
+                       Price_res = p1ct$varresult$Price$residuals)
+gg_acf <- tibble(lag = c(acf_emission_res$lag),
+                 Emission_acf = c(acf_emission_res$acf),
+                 Consumption_acf = c(acf_consumption_res$acf),
+                 Price_acf = c(acf_price_res$acf))
+
+gg_pacf <- tibble(lag = c(pacf_emission_res$lag),
+                  Emission_pacf = c(pacf_emission_res$acf),
+                 Consumption_pacf = c(pacf_consumption_res$acf),
+                 Price_pacf = c(pacf_price_res$acf))
+
+emission_res_plot <- ggplot(data = gg_residuals, aes(x = seq_along(Emission_res), y = Emission_res)) +
+  geom_point(alpha = 0.5) +
+  ylab("Emission Residuals") +
+  xlab("Index") +
+  geom_hline(aes(yintercept = 0))
+emission_acf_plot <- ggplot(data = gg_acf, aes(x = lag, y = Emission_acf)) +
+  geom_hline(aes(yintercept = 0)) +
+  geom_segment(mapping = aes(xend = lag, yend = 0)) +
+  geom_hline(aes(yintercept = 0.05), linetype = "dashed", color = "blue", size = 0.5, alpha = 0.5) +
+  geom_hline(aes(yintercept = -0.05), linetype = "dashed", color = "blue", size = 0.5, alpha = 0.5) +
+  ylab("ACF") +
+  xlab("Lag")
+emission_pacf_plot <- ggplot(data = gg_pacf, aes(x = lag, y = Emission_pacf)) +
+  geom_hline(aes(yintercept = 0)) +
+  geom_segment(mapping = aes(xend = lag, yend = 0)) +
+  geom_hline(aes(yintercept = 0.05), linetype = "dashed", color = "blue", size = 0.5, alpha = 0.5) +
+  geom_hline(aes(yintercept = -0.05), linetype = "dashed", color = "blue", size = 0.5, alpha = 0.5) +
+  ylab("PACF") +
+  xlab("Lag")
+
+# pdf(file = "Emission_res_acf.pdf",height = 2.5,width = 8)
+ggarrange(emission_res_plot,
+          ggarrange(emission_acf_plot,emission_pacf_plot, ncol = 2),
+          nrow = 2)
+# dev.off()
+
+consumption_res_plot <- ggplot(data = gg_residuals,
+                               aes(x = seq_along(Consumption_res), y = Consumption_res)) +
+  geom_point(alpha = 0.5) +
+  ylab("Consumption Residuals") +
+  xlab("Index") +
+  geom_hline(aes(yintercept = 0))
+consumption_acf_plot <- ggplot(data = gg_acf, aes(x = lag, y = Consumption_acf)) +
+  geom_hline(aes(yintercept = 0)) +
+  geom_segment(mapping = aes(xend = lag, yend = 0)) +
+  geom_hline(aes(yintercept = 0.05), linetype = "dashed", color = "blue", size = 0.5, alpha = 0.5) +
+  geom_hline(aes(yintercept = -0.05), linetype = "dashed", color = "blue", size = 0.5, alpha = 0.5) +
+  ylab("ACF") +
+  xlab("Lag")
+consumption_pacf_plot <- ggplot(data = gg_pacf, aes(x = lag, y = Consumption_pacf)) +
+  geom_hline(aes(yintercept = 0)) +
+  geom_segment(mapping = aes(xend = lag, yend = 0)) +
+  geom_hline(aes(yintercept = 0.05), linetype = "dashed", color = "blue", size = 0.5, alpha = 0.5) +
+  geom_hline(aes(yintercept = -0.05), linetype = "dashed", color = "blue", size = 0.5, alpha = 0.5) +
+  ylab("PACF") +
+  xlab("Lag")
+
+# pdf(file = "Consumption_res_acf.pdf",height = 2.5,width = 8)
+ggarrange(consumption_res_plot,
+          ggarrange(consumption_acf_plot,consumption_pacf_plot, ncol = 2),
+          nrow = 2)
+# dev.off()
+
+Price_res_plot <- ggplot(data = gg_residuals,
+                               aes(x = seq_along(Price_res), y = Price_res)) +
+  geom_point(alpha = 0.5) +
+  ylab("Price Residuals") +
+  xlab("Index") +
+  geom_hline(aes(yintercept = 0))
+Price_acf_plot <- ggplot(data = gg_acf, aes(x = lag, y = Price_acf)) +
+  geom_hline(aes(yintercept = 0)) +
+  geom_segment(mapping = aes(xend = lag, yend = 0)) +
+  geom_hline(aes(yintercept = 0.05), linetype = "dashed", color = "blue", size = 0.5, alpha = 0.5) +
+  geom_hline(aes(yintercept = -0.05), linetype = "dashed", color = "blue", size = 0.5, alpha = 0.5) +
+  ylab("ACF") +
+  xlab("Lag")
+Price_pacf_plot <- ggplot(data = gg_pacf, aes(x = lag, y = Price_pacf)) +
+  geom_hline(aes(yintercept = 0)) +
+  geom_segment(mapping = aes(xend = lag, yend = 0)) +
+  geom_hline(aes(yintercept = 0.05), linetype = "dashed", color = "blue", size = 0.5, alpha = 0.5) +
+  geom_hline(aes(yintercept = -0.05), linetype = "dashed", color = "blue", size = 0.5, alpha = 0.5) +
+  ylab("PACF") +
+  xlab("Lag")
+
+# pdf(file = "Price_res_acf.pdf",height = 2.5,width = 8)
+ggarrange(Price_res_plot,
+          ggarrange(Price_acf_plot,Price_pacf_plot, ncol = 2),
+          nrow = 2)
+# dev.off()
+
+```
+
+# Granger causality
+
+```{r}
+
+# causality
+p1ct$varresult
+causality(p1ct, cause = c("Consumption","Emission"))
+# causality(p1ct, cause = "Emission", vcov.=vcovHC(p1ct))
+causality(p1ct, cause = "Emission")
+causality(p1ct, cause = "Price")
+causality(p1ct, cause = "Consumption")
+
+
+granger <- function(data) {
+  for (i in 1:ncol(data)) {
+    for (j in 1:ncol(data)) {
+      if (!(i==j)) {
+        cat("\n", "H_0:", variable.names(data_ts)[i], "does not granger causes",
+            variable.names(data_ts)[j], "\n")
+        print(grangertest(data[,i], data[,j], order = 3))
+      }
+    }
+  }
+}
+granger(data_ts)
+
+
+```
+
+
+
+
+# impuls, osv.
+
+
+```{r}
+#impuls <- irf(p1ct, impulse = "Consumption",response = c("Price", "mean_emission"), boot = F)
+impuls_iorto <- irf(p1ct, boot = F, ortho = F, cumulative = F, n.ahead = 20) # shocksne er sd, https://stackoverflow.com/questions/47309757/shock-magnitude-in-irf-of-vars-package-r
+# impuls_orto <- irf(p1ct, boot = F, ortho = T, cumulative = F, n.ahead = 20)
+
+plot(impuls_iorto)
+impuls_iorto
+
+plot(impuls_orto)
+impuls_orto
+sum_p1ct <- summary(p1ct)
+sum_p1ct$covres
+sum_p1ct$corres
+
+
+```
+
+# cholesky faktorisering
+
+```{r}
+
+qr(sum_p1ct$covres)
+chol_covres <- chol(sum_p1ct$covres)
+solve(sum_p1ct$covres)
+det(sum_p1ct$covres)
+t(chol_covres) %*% chol_covres
+
+
+p1ct$varresult
+
+View(p1ct)
+p1ct_A_1 <- data.frame(col1 = c(p1ct$varresult$Consumption$coefficients[1], 
+                                p1ct$varresult$Price$coefficients[1],
+                                p1ct$varresult$Emission$coefficients[1]),
+                       col2 = c(p1ct$varresult$Consumption$coefficients[2], 
+                                p1ct$varresult$Price$coefficients[2],
+                                p1ct$varresult$Emission$coefficients[2]),
+                       col3 = c(p1ct$varresult$Consumption$coefficients[3], 
+                                p1ct$varresult$Price$coefficients[3],
+                                p1ct$varresult$Emission$coefficients[3]))
+
+p1ct_A_2 <- data.frame(col1 = c(p1ct$varresult$Consumption$coefficients[4], 
+                                p1ct$varresult$Price$coefficients[4],
+                                p1ct$varresult$Emission$coefficients[4]),
+                       col2 = c(p1ct$varresult$Consumption$coefficients[5], 
+                                p1ct$varresult$Price$coefficients[5],
+                                p1ct$varresult$Emission$coefficients[5]),
+                       col3 = c(p1ct$varresult$Consumption$coefficients[6], 
+                                p1ct$varresult$Price$coefficients[6],
+                                p1ct$varresult$Emission$coefficients[6]))
+
+p1ct_A_3 <- data.frame(col1 = c(p1ct$varresult$Consumption$coefficients[7], 
+                                p1ct$varresult$Price$coefficients[7],
+                                p1ct$varresult$Emission$coefficients[7]),
+                       col2 = c(p1ct$varresult$Consumption$coefficients[8], 
+                                p1ct$varresult$Price$coefficients[8],
+                                p1ct$varresult$Emission$coefficients[8]),
+                       col3 = c(p1ct$varresult$Consumption$coefficients[9], 
+                                p1ct$varresult$Price$coefficients[9],
+                                p1ct$varresult$Emission$coefficients[9]))
+
+p1ct_const <- data.frame(const = c(p1ct$varresult$Consumption$coefficients[10], 
+                                p1ct$varresult$Price$coefficients[10],
+                                p1ct$varresult$Emission$coefficients[10]))
+
+
+p1ct_chol_inv <- solve(t(chol_covres))
+p1ct_chol_inv[2,3] <- 0
+
+inv_const <- as.matrix(p1ct_chol_inv) %*% as.matrix(p1ct_const)
+A_1_inv <- as.matrix(p1ct_chol_inv) %*% as.matrix(p1ct_A_1)
+A_2_inv <- as.matrix(p1ct_chol_inv) %*% as.matrix(p1ct_A_2)
+A_3_inv <- as.matrix(p1ct_chol_inv) %*% as.matrix(p1ct_A_3)
+
+data_ts
+
+premultiply <- function(x) {
+  vec <- t(as.matrix(x))
+  as.matrix(as.matrix(p1ct_chol_inv) %*% vec)
+}
+# apply(as.matrix(data_ts)[,1:3], 1, premultiply)
+# apply(data_ts, 1, mean)
+# 
+# as.matrix(p1ct_chol_inv) %*% t(as.matrix(data_ts[1,]))
+# premultiply(data_ts[1,1:3])
+
+inv_result <- matrix(nrow = dim(data_ts)[1], ncol = dim(data_ts)[2])
+for (i in 1:dim(data_ts)[1]) {
+  inv_result[i,] <- t(premultiply(data_ts[i,]))
+}
+inv_result
+View(p1ct$varresult$Consumption$coefficients)
+str(data_ts)
+
+VARselect(inv_result)
+colnames(inv_result) <- c("Consumption", "Price", "Emission")
+head(inv_result)
+inv_var_mod <- VAR(inv_result,p = 3,type = "const")
+
+inv_var_mod$varresult$Consumption
+p1ct_A_1
+plot(inv_var_mod)
+plot(irf(x = inv_var_mod,boot = F, ortho = T))
+
+summary(inv_var_mod)
+```
+
+
+
+```{r}
 ser11 <- serial.test(p1ct, lags.pt = 16, type = "PT.asymptotic")
 ser11
 plot(ser11)
@@ -348,18 +1225,12 @@ norm1 <- normality.test(p1ct)
 norm1$jb.mul
 plot(norm1)
 
-fanchart(predict(p1ct, n.ahead = 20), xlim = c(1050,1150))
+fanchart(predict(p1ct, n.ahead = 50), xlim = c(1050,1150))
+```
 
-#impuls <- irf(p1ct, impulse = "Consumption",response = c("Price", "mean_emission"), boot = F)
-impuls_iorto <- irf(p1ct, boot = F, ortho = F, cumulative = F, n.ahead = 20) # shocksne er sd, https://stackoverflow.com/questions/47309757/shock-magnitude-in-irf-of-vars-package-r
-impuls_orto <- irf(p1ct, boot = F, ortho = T, cumulative = F, n.ahead = 20)
 
-plot(impuls_iorto)
-impuls_iorto
 
-impuls_orto
-plot(impuls_orto)
-
+```{r}
 forecast_error <- fevd(p1ct)
 print(forecast_error)
 plot(forecast_error)
@@ -378,26 +1249,7 @@ plot(stability(p1ct))
 summary(ca.jo(data_total[,-1], type = "trace", ecdet = "trend", K = 8, spec = "transitory"))
 
 
-# causality
-p1ct$varresult
-causality(p1ct, cause = c("Consumption","mean_emission"))
-causality(p1ct, cause = "mean_emission", vcov.=vcovHC(p1ct))
-causality(p1ct, cause = "mean_emission")
-causality(p1ct, cause = "Price")
-causality(p1ct, cause = "Consumption")
 
-
-granger <- function(data) {
-  for (i in 1:ncol(data)) {
-    for (j in 1:ncol(data)) {
-      if (!(i==j)) {
-        cat("col = ", i, "col = ", j, "\n")
-        print(grangertest(data[,i], data[,j]))
-      }
-    }
-  }
-}
-granger(data_ts)
 
 
 
@@ -421,14 +1273,16 @@ apply(data_ts, 2, mean)
 
 amat <- diag(3)
 diag(amat) <- NA
-
+# amat[2,1] <- NA
+bmat <- diag(3)
+diag(bmat) <- NA
 # SVAR(p1ct, Amat = amat,estmethod = "scoring", hessian = T, Bmat = NULL,
 #     max.iter = 100, maxls = 1000, conv.crit = 1.0e-8)
 
-svar_result <- SVAR(x = p1ct, estmethod = "direct", Amat = amat)
+svar_result <- SVAR(x = p1ct, estmethod = "direct", Amat = amat, Bmat = bmat)
 
-
-irf_svar <- irf(svar_result, boot = F)
+summary(svar_result)
+irf_svar <- irf(svar_result, boot = F, ortho = F)
 plot(irf_svar)
 
 
